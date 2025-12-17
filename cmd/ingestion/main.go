@@ -1,0 +1,110 @@
+package main
+
+import (
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+
+	"stoik.com/emailsec/internal/client"
+	"stoik.com/emailsec/internal/core/service"
+	"stoik.com/emailsec/internal/infrastructure/amqp"
+	"stoik.com/emailsec/internal/server"
+	"stoik.com/emailsec/internal/storage"
+)
+
+func main() {
+	// Initialize logger
+	log.SetFormatter(&log.JSONFormatter{})
+	log.SetLevel(log.InfoLevel)
+
+	// Get configuration from environment
+	amqpURL := os.Getenv("AMQP_URL")
+	if amqpURL == "" {
+		amqpURL = "amqp://guest:guest@localhost:5672/"
+	}
+
+	httpAddr := os.Getenv("HTTP_ADDR")
+	if httpAddr == "" {
+		httpAddr = ":8080"
+	}
+
+	// Create AMQP client
+	amqpClient, err := amqp.NewClient(amqpURL)
+	if err != nil {
+		log.Fatalf("Failed to create AMQP client: %v", err)
+	}
+	defer amqpClient.Close()
+
+	dbHost := os.Getenv("DB_HOST")
+	if dbHost == "" {
+		dbHost = "localhost"
+	}
+	dbPort := os.Getenv("DB_PORT")
+	if dbPort == "" {
+		dbPort = "5432"
+	}
+	dbUser := os.Getenv("DB_USER")
+	if dbUser == "" {
+		dbUser = "postgres"
+	}
+	dbPassword := os.Getenv("DB_PASSWORD")
+	dbName := os.Getenv("DB_NAME")
+	if dbName == "" {
+		dbName = "emailsec"
+	}
+
+	// **Create database connection**
+	ctx := context.Background()
+	db, err := storage.NewPostgresDB(ctx, dbHost, dbPort, dbUser, dbPassword, dbName)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
+
+	ingestionStorage := storage.NewIngestionStorage(db)
+
+	// Set up topology (exchanges, queues, bindings)
+	topologyManager := amqp.NewTopologyManager(amqpClient)
+	if err := topologyManager.Setup(); err != nil {
+		log.Fatalf("Failed to setup AMQP topology: %v", err)
+	}
+
+	// Create publisher
+	publisher := amqp.NewPublisher(amqpClient)
+
+	// Create notifier
+	notifier := client.NewAMQPNotifier(publisher)
+
+	ingestionService := service.NewIngestionService(ingestionStorage, notifier)
+
+	// Create HTTP server
+	httpServer := server.NewHTTPServer(notifier, ingestionService)
+
+	// Start HTTP server in a goroutine
+	go func() {
+		if err := httpServer.Start(httpAddr); err != nil {
+			log.Fatalf("Failed to start HTTP server: %v", err)
+		}
+	}()
+
+	log.Info("Ingestion service started successfully")
+
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	log.Info("Shutting down ingestion service...")
+
+	// Graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := httpServer.Shutdown(ctx); err != nil {
+		log.Errorf("Error shutting down HTTP server: %v", err)
+	}
+}

@@ -1,0 +1,11 @@
+.git
+.gitignore
+README.md
+*.md
+.env
+.vscode
+.idea
+bin/
+tmp/
+*.log
+coverage.out

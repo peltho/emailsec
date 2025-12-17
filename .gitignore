@@ -1,0 +1,4 @@
+/mocks/
+coverage.out
+coverage.html
+.env

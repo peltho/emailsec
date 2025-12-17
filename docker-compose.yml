@@ -1,0 +1,80 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: emailsec-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: emailsec
+      POSTGRES_PASSWORD: emailsec_pwd
+      POSTGRES_DB: emailsec
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U emailsec"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - emailsec-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: emailsec-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - emailsec-network
+
+  ingestion:
+    build:
+      context: .
+      dockerfile: Dockerfile.ingestion
+    container_name: emailsec-ingestion
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./.env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - emailsec-network
+    restart: unless-stopped
+
+  fraud-detector:
+    build:
+      context: .
+      dockerfile: Dockerfile.fraud-detector
+    container_name: emailsec-fraud-detector
+    env_file:
+      - ./.env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - emailsec-network
+    restart: unless-stopped
+
+volumes:
+  rabbitmq_data:
+  postgres_data:
+
+networks:
+  emailsec-network:
+    driver: bridge
