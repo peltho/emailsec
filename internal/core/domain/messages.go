@@ -15,7 +15,7 @@ type NormalizedEmailsBatchMessage struct {
 	BatchID     uuid.UUID
 	TenantID    uuid.UUID
 	EmailIDList uuid.UUIDs
-	UserIDList  uuid.UUIDs
+	UserID      uuid.UUID
 	IngestedAt  time.Time
 }
 

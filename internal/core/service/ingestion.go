@@ -134,7 +134,7 @@ func (i *IngestionService) ingestMicrosoftUser(ctx context.Context, tenantID uui
 
 	// Start batch writer goroutine
 	go func() {
-		errCh <- i.batchWriter(ctx, emailCh, 500)
+		errCh <- i.batchWriter(ctx, user.UserID, emailCh, 500)
 	}()
 
 	for _, email := range emails {
@@ -181,7 +181,7 @@ func (i *IngestionService) ingestGoogleUser(ctx context.Context, tenantID uuid.U
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- i.batchWriter(ctx, emailCh, 500)
+		errCh <- i.batchWriter(ctx, user.UserID, emailCh, 500)
 	}()
 
 	for _, email := range emails {
@@ -269,7 +269,7 @@ func (i *IngestionService) NormalizeGoogleEmail(tenantID uuid.UUID, userID uuid.
 }
 
 // Here we batch process emails (chunks of 500) not to overflow DB by calling it too much
-func (i *IngestionService) batchWriter(ctx context.Context, in <-chan domain.Email, batchSize int) error {
+func (i *IngestionService) batchWriter(ctx context.Context, userID uuid.UUID, in <-chan domain.Email, batchSize int) error {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -290,7 +290,7 @@ func (i *IngestionService) batchWriter(ctx context.Context, in <-chan domain.Ema
 			BatchID:     uuid.New(),
 			TenantID:    batch[0].TenantID,
 			EmailIDList: extractEmailIDs(batch),
-			UserIDList:  extractUserIDs(batch),
+			UserID:      userID,
 		}
 
 		i.notifierClient.NotifyEmailBatchIngested(ctx, batchMsg)
@@ -326,19 +326,6 @@ func extractEmailIDs(batch []domain.Email) uuid.UUIDs {
 	for _, email := range batch {
 		if id, err := uuid.Parse(email.MessageID); err == nil {
 			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
-func extractUserIDs(batch []domain.Email) uuid.UUIDs {
-	seen := make(map[uuid.UUID]bool)
-	ids := make(uuid.UUIDs, 0)
-
-	for _, email := range batch {
-		if !seen[email.UserID] {
-			seen[email.UserID] = true
-			ids = append(ids, email.UserID)
 		}
 	}
 	return ids

@@ -8,7 +8,7 @@ import (
 
 type Tenant struct {
 	TenantID uuid.UUID
-	Provider string // Microsoft or Google
+	Provider string // microsoft or google
 	Name     string // Voyage Privé, api.video, etc.
 }
 

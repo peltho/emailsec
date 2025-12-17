@@ -247,7 +247,7 @@ func (suite *IngestionServiceSuite) TestBatchWriter_SmallBatch() {
 
 	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.AnythingOfType("*domain.NormalizedEmailsBatchMessage")).Return(nil).Once()
 
-	err := suite.ingestionService.batchWriter(ctx, emailCh, 500)
+	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, 500)
 
 	assert.NoError(suite.T(), err)
 }
@@ -288,7 +288,7 @@ func (suite *IngestionServiceSuite) TestBatchWriter_LargeBatch() {
 
 	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.AnythingOfType("*domain.NormalizedEmailsBatchMessage")).Return(nil).Times(3)
 
-	err := suite.ingestionService.batchWriter(ctx, emailCh, batchSize)
+	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, batchSize)
 
 	assert.NoError(suite.T(), err)
 }
@@ -317,7 +317,7 @@ func (suite *IngestionServiceSuite) TestBatchWriter_StorageError() {
 	expectedErr := errors.New("storage error")
 	suite.ingestionStorage.EXPECT().StoreBatch(ctx, mock.Anything).Return(expectedErr).Once()
 
-	err := suite.ingestionService.batchWriter(ctx, emailCh, 500)
+	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, 500)
 
 	assert.Error(suite.T(), err)
 	assert.Equal(suite.T(), expectedErr, err)
@@ -325,11 +325,12 @@ func (suite *IngestionServiceSuite) TestBatchWriter_StorageError() {
 
 func (suite *IngestionServiceSuite) TestBatchWriter_EmptyChannel() {
 	ctx := context.Background()
+	userID := uuid.New()
 
 	emailCh := make(chan domain.Email)
 	close(emailCh)
 
-	err := suite.ingestionService.batchWriter(ctx, emailCh, 500)
+	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, 500)
 
 	assert.NoError(suite.T(), err)
 }
@@ -353,26 +354,6 @@ func (suite *IngestionServiceSuite) TestExtractEmailIDs() {
 	assert.Contains(suite.T(), ids, uuid.MustParse(validID1))
 	assert.Contains(suite.T(), ids, uuid.MustParse(validID2))
 	assert.Contains(suite.T(), ids, uuid.MustParse(validID3))
-}
-
-func (suite *IngestionServiceSuite) TestExtractUserIDs() {
-	userID1 := uuid.New()
-	userID2 := uuid.New()
-
-	emails := []domain.Email{
-		{UserID: userID1},
-		{UserID: userID2},
-		{UserID: userID1}, // Duplicate
-		{UserID: userID2}, // Duplicate
-		{UserID: userID1}, // Duplicate
-	}
-
-	ids := extractUserIDs(emails)
-
-	// Should have only 2 unique user IDs
-	assert.Equal(suite.T(), 2, len(ids))
-	assert.Contains(suite.T(), ids, userID1)
-	assert.Contains(suite.T(), ids, userID2)
 }
 
 func (suite *IngestionServiceSuite) TestIngestMicrosoftUser_CursorUpdate_WithoutData() {
