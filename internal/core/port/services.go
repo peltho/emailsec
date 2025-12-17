@@ -19,10 +19,12 @@ type IngestionService interface {
 }
 
 type FraudDetectionService interface {
+	Run(ctx context.Context, batchMessage domain.NormalizedEmailBatchMessage) error
 	AnalyzeEmail(ctx context.Context, email domain.Email) (bool, error)
 }
 
 type EmailStorage interface {
 	StoreEmail(ctx context.Context, email domain.Email) error
 	GetEmail(ctx context.Context, emailID uuid.UUID) (*domain.Email, error)
+	GetEmailsFromBatch(ctx context.Context, emailIDs []uuid.UUID) (map[uuid.UUID]*domain.Email, error)
 }

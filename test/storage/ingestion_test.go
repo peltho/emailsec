@@ -23,7 +23,7 @@ type IngestionSuite struct {
 	dockerPool           *dockertest.Pool
 	postgresCoreResource *dockertest.Resource
 	postgresDB           *sql.DB
-	Ingestion            *storage.IngestionStorage
+	storage              *storage.EmailsStorage
 }
 
 func (suite *IngestionSuite) SetupSuite() {
@@ -64,7 +64,7 @@ func (suite *IngestionSuite) SetupSuite() {
 			suite.T().Fatalf("Failed to connect to database: %v", err)
 		}
 
-		suite.Ingestion = storage.NewIngestionStorage(postgresDB)
+		suite.storage = storage.NewEmailsStorage(postgresDB)
 	}
 }
 
@@ -106,7 +106,7 @@ func (suite *IngestionSuite) TearDownSuite() {
 func (suite *IngestionSuite) TestGetTenant_OK() {
 	ctx := context.Background()
 	tenantID, _ := uuid.Parse("d290f1ee-6c54-4b01-90e6-d701748f0851")
-	tenant, err := suite.Ingestion.GetTenant(ctx, tenantID)
+	tenant, err := suite.storage.GetTenant(ctx, tenantID)
 
 	suite.NoError(err)
 	suite.Assert().Equal("Voyage Privé", tenant.Name)

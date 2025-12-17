@@ -9,17 +9,17 @@ import (
 	"stoik.com/emailsec/internal/core/domain"
 )
 
-type IngestionStorage struct {
+type EmailsStorage struct {
 	db *PostgresDB
 }
 
-func NewIngestionStorage(db *PostgresDB) *IngestionStorage {
-	return &IngestionStorage{
+func NewEmailsStorage(db *PostgresDB) *EmailsStorage {
+	return &EmailsStorage{
 		db: db,
 	}
 }
 
-func (s *IngestionStorage) GetTenant(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error) {
+func (s *EmailsStorage) GetTenant(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error) {
 	var tenant domain.Tenant
 	err := s.db.QueryRow(ctx,
 		"SELECT id, name, provider FROM tenants WHERE id = $1",
@@ -33,7 +33,7 @@ func (s *IngestionStorage) GetTenant(ctx context.Context, tenantID uuid.UUID) (*
 	return &tenant, nil
 }
 
-func (s *IngestionStorage) StoreBatch(ctx context.Context, batch []domain.Email) error {
+func (s *EmailsStorage) StoreBatch(ctx context.Context, batch []domain.Email) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -70,7 +70,7 @@ func (s *IngestionStorage) StoreBatch(ctx context.Context, batch []domain.Email)
 // LoadCursor retrieves the ingestion cursor for a specific tenant/provider/user combination.
 // If no cursor exists, it returns a new cursor with LastReceivedAt set to 30 days ago,
 // allowing the first ingestion to fetch recent emails.
-func (s *IngestionStorage) LoadCursor(ctx context.Context, tenantID uuid.UUID, provider string, userID uuid.UUID) (*domain.IngestionCursor, error) {
+func (s *EmailsStorage) LoadCursor(ctx context.Context, tenantID uuid.UUID, provider string, userID uuid.UUID) (*domain.IngestionCursor, error) {
 	cursor := &domain.IngestionCursor{
 		TenantID: tenantID,
 		Provider: provider,
@@ -101,7 +101,7 @@ func (s *IngestionStorage) LoadCursor(ctx context.Context, tenantID uuid.UUID, p
 	return cursor, nil
 }
 
-func (s *IngestionStorage) UpsertCursor(ctx context.Context, cursor *domain.IngestionCursor) error {
+func (s *EmailsStorage) UpsertCursor(ctx context.Context, cursor *domain.IngestionCursor) error {
 	_, err := s.db.Exec(ctx,
 		`INSERT INTO ingestion_cursors (tenant_id, provider, user_id, last_received_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5)
@@ -117,4 +117,51 @@ func (s *IngestionStorage) UpsertCursor(ctx context.Context, cursor *domain.Inge
 	)
 
 	return err
+}
+
+func (s *EmailsStorage) GetEmailsFromBatch(ctx context.Context, emailIDs []uuid.UUID) (map[uuid.UUID]*domain.Email, error) {
+	if len(emailIDs) == 0 {
+		return make(map[uuid.UUID]*domain.Email), nil
+	}
+
+	query := `
+		SELECT id, tenant_id, user_id, message_id, from_address, to_addresses, subject, body, headers, received_at, provider
+		FROM emails
+		WHERE id = ANY($1)
+	`
+
+	rows, err := s.db.Query(ctx, query, emailIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Because it's faster to loop on a map than a regular slice
+	emails := make(map[uuid.UUID]*domain.Email)
+	for rows.Next() {
+		email := &domain.Email{}
+		err := rows.Scan(
+			&email.ID,
+			&email.TenantID,
+			&email.UserID,
+			&email.MessageID,
+			&email.From,
+			&email.To,
+			&email.Subject,
+			&email.Body,
+			&email.Headers,
+			&email.ReceivedAt,
+			&email.Provider,
+		)
+		if err != nil {
+			return nil, err
+		}
+		emails[email.ID] = email
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return emails, nil
 }

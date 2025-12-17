@@ -43,6 +43,7 @@ type GoogleEmail struct {
 }
 
 type Email struct {
+	ID         uuid.UUID
 	TenantID   uuid.UUID
 	UserID     uuid.UUID
 	MessageID  string

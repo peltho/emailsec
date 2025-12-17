@@ -8,5 +8,5 @@ import (
 
 type NotifierClient interface {
 	NotifySuspectingFraudulentEmail(ctx context.Context, message *domain.SuspectingFraudulentEmailMessage) error
-	NotifyEmailBatchIngested(ctx context.Context, event *domain.NormalizedEmailsBatchMessage) error
+	NotifyEmailBatchIngested(ctx context.Context, event *domain.NormalizedEmailBatchMessage) error
 }

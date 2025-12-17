@@ -23,14 +23,12 @@ func main() {
 
 	// Get configuration from environment
 	amqpURL := os.Getenv("AMQP_URL")
-	if amqpURL == "" {
-		amqpURL = "amqp://guest:guest@localhost:5672/"
-	}
-
 	httpAddr := os.Getenv("HTTP_ADDR")
-	if httpAddr == "" {
-		httpAddr = ":8080"
-	}
+	dbHost := os.Getenv("DB_HOST")
+	dbPort := os.Getenv("DB_PORT")
+	dbUser := os.Getenv("DB_USER")
+	dbPassword := os.Getenv("DB_PASSWORD")
+	dbName := os.Getenv("DB_NAME")
 
 	// Create AMQP client
 	amqpClient, err := amqp.NewClient(amqpURL)
@@ -38,34 +36,16 @@ func main() {
 		log.Fatalf("Failed to create AMQP client: %v", err)
 	}
 	defer amqpClient.Close()
+	publisher := amqp.NewPublisher(amqpClient)
+	notifier := client.NewAMQPNotifier(publisher)
 
-	dbHost := os.Getenv("DB_HOST")
-	if dbHost == "" {
-		dbHost = "localhost"
-	}
-	dbPort := os.Getenv("DB_PORT")
-	if dbPort == "" {
-		dbPort = "5432"
-	}
-	dbUser := os.Getenv("DB_USER")
-	if dbUser == "" {
-		dbUser = "postgres"
-	}
-	dbPassword := os.Getenv("DB_PASSWORD")
-	dbName := os.Getenv("DB_NAME")
-	if dbName == "" {
-		dbName = "emailsec"
-	}
-
-	// **Create database connection**
 	ctx := context.Background()
 	db, err := storage.NewPostgresDB(ctx, dbHost, dbPort, dbUser, dbPassword, dbName)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
-
-	ingestionStorage := storage.NewIngestionStorage(db)
+	storage := storage.NewEmailsStorage(db)
 
 	// Set up topology (exchanges, queues, bindings)
 	topologyManager := amqp.NewTopologyManager(amqpClient)
@@ -73,13 +53,7 @@ func main() {
 		log.Fatalf("Failed to setup AMQP topology: %v", err)
 	}
 
-	// Create publisher
-	publisher := amqp.NewPublisher(amqpClient)
-
-	// Create notifier
-	notifier := client.NewAMQPNotifier(publisher)
-
-	ingestionService := service.NewIngestionService(ingestionStorage, notifier)
+	ingestionService := service.NewIngestionService(storage, notifier)
 
 	// Create HTTP server
 	httpServer := server.NewHTTPServer(notifier, ingestionService)

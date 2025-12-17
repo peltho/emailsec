@@ -10,8 +10,10 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"stoik.com/emailsec/internal/client"
+	"stoik.com/emailsec/internal/core/service"
 	"stoik.com/emailsec/internal/handler"
 	"stoik.com/emailsec/internal/infrastructure/amqp"
+	"stoik.com/emailsec/internal/storage"
 )
 
 func main() {
@@ -19,11 +21,13 @@ func main() {
 	log.SetFormatter(&log.JSONFormatter{})
 	log.SetLevel(log.InfoLevel)
 
-	// Get RabbitMQ URL from environment
+	// Get configuration from environment
 	amqpURL := os.Getenv("AMQP_URL")
-	if amqpURL == "" {
-		amqpURL = "amqp://guest:guest@localhost:5672/"
-	}
+	dbHost := os.Getenv("DB_HOST")
+	dbPort := os.Getenv("DB_PORT")
+	dbUser := os.Getenv("DB_USER")
+	dbPassword := os.Getenv("DB_PASSWORD")
+	dbName := os.Getenv("DB_NAME")
 
 	// Create AMQP client
 	amqpClient, err := amqp.NewClient(amqpURL)
@@ -31,37 +35,29 @@ func main() {
 		log.Fatalf("Failed to create AMQP client: %v", err)
 	}
 	defer amqpClient.Close()
+	publisher := amqp.NewPublisher(amqpClient)
+	notifier := client.NewAMQPNotifier(publisher)
+
+	ctx := context.Background()
+	db, err := storage.NewPostgresDB(ctx, dbHost, dbPort, dbUser, dbPassword, dbName)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
+	emailsStorage := storage.NewEmailsStorage(db)
 
 	// Set up topology (exchanges, queues, bindings)
 	topologyManager := amqp.NewTopologyManager(amqpClient)
 	if err := topologyManager.Setup(); err != nil {
 		log.Fatalf("Failed to setup AMQP topology: %v", err)
 	}
-
-	// Create publisher
-	publisher := amqp.NewPublisher(amqpClient)
-
-	// Create notifier
-	notifier := client.NewAMQPNotifier(publisher)
-
-	// TODO: Initialize your detection service and email storage
-	// For now, use nil interfaces - you'll need to implement these with real services
-	// Example:
-	// detectionService := service.NewFraudDetectionService()
-	// emailStorage := storage.NewPostgresEmailStorage(db)
-
-	// Create validator
 	validate := validator.New()
-
-	// Create message handler (consumer handler)
-	// Note: passing nil for services - replace with actual implementations
+	fraudDetectionService := service.NewFraudDetectionService(emailsStorage)
 	messageHandler := handler.NewAMQPConsumer(
-		nil, // detectionService - implement port.DetectionService
-		nil, // emailStorage - implement port.EmailStorage
+		fraudDetectionService,
 		validate,
 	)
 
-	// Create consumer
 	consumer := amqp.NewConsumer(amqpClient, messageHandler)
 
 	// Start consuming messages

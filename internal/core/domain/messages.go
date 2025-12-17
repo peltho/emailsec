@@ -7,16 +7,16 @@ import (
 )
 
 var (
-	RoutingKeyEmailIngested      = "email.ingested"
+	RoutingKeyEmailBatchIngested = "email.batch.ingested"
 	RoutingKeyFraudulentDetected = "email.fraud.detected"
 )
 
-type NormalizedEmailsBatchMessage struct {
-	BatchID     uuid.UUID
-	TenantID    uuid.UUID
-	EmailIDList uuid.UUIDs
-	UserID      uuid.UUID
-	IngestedAt  time.Time
+type NormalizedEmailBatchMessage struct {
+	BatchID     uuid.UUID  `json:"batch_id" validate:"required"`
+	TenantID    uuid.UUID  `json:"tenant_id" validate:"required"`
+	EmailIDList uuid.UUIDs `json:"email_id_list" validate:"required,max=500,dive,required"`
+	UserID      uuid.UUID  `json:"user_id" validate:"required"`
+	IngestedAt  time.Time  `json:"ingested_at" validate:"required"`
 }
 
 type SuspectingFraudulentEmailMessage struct {

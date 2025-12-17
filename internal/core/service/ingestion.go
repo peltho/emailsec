@@ -12,22 +12,22 @@ import (
 )
 
 type IngestionService struct {
-	ingestionStorage port.IngestionStorage
-	notifierClient   port.NotifierClient
+	storage        port.EmailsStorage
+	notifierClient port.NotifierClient
 }
 
 func NewIngestionService(
-	ingestionStorage port.IngestionStorage,
+	storage port.EmailsStorage,
 	notifierClient port.NotifierClient,
 ) *IngestionService {
 	return &IngestionService{
-		ingestionStorage: ingestionStorage,
-		notifierClient:   notifierClient,
+		storage:        storage,
+		notifierClient: notifierClient,
 	}
 }
 
 func (i *IngestionService) Run(ctx context.Context, tenantID uuid.UUID) error {
-	tenant, err := i.ingestionStorage.GetTenant(ctx, tenantID)
+	tenant, err := i.storage.GetTenant(ctx, tenantID)
 	if err != nil {
 		return err
 	}
@@ -111,7 +111,7 @@ func (i *IngestionService) ingestGoogleTenant(ctx context.Context, tenantID uuid
 }
 
 func (i *IngestionService) ingestMicrosoftUser(ctx context.Context, tenantID uuid.UUID, user domain.MicrosoftUser) error {
-	cursor, err := i.ingestionStorage.LoadCursor(ctx, tenantID, "microsoft", user.UserID)
+	cursor, err := i.storage.LoadCursor(ctx, tenantID, "microsoft", user.UserID)
 	if err != nil {
 		return err
 	}
@@ -156,11 +156,11 @@ func (i *IngestionService) ingestMicrosoftUser(ctx context.Context, tenantID uui
 	cursor.LastReceivedAt = maxSeen
 	cursor.UpdatedAt = time.Now()
 
-	return i.ingestionStorage.UpsertCursor(ctx, cursor)
+	return i.storage.UpsertCursor(ctx, cursor)
 }
 
 func (i *IngestionService) ingestGoogleUser(ctx context.Context, tenantID uuid.UUID, user domain.GoogleUser) error {
-	cursor, err := i.ingestionStorage.LoadCursor(ctx, tenantID, "google", user.UserID)
+	cursor, err := i.storage.LoadCursor(ctx, tenantID, "google", user.UserID)
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,7 @@ func (i *IngestionService) ingestGoogleUser(ctx context.Context, tenantID uuid.U
 	cursor.LastReceivedAt = maxSeen
 	cursor.UpdatedAt = time.Now()
 
-	return i.ingestionStorage.UpsertCursor(ctx, cursor)
+	return i.storage.UpsertCursor(ctx, cursor)
 }
 
 func (i *IngestionService) GetMicrosoftUsers(ctx context.Context, tenantID uuid.UUID) ([]domain.MicrosoftUser, error) {
@@ -280,13 +280,13 @@ func (i *IngestionService) batchWriter(ctx context.Context, userID uuid.UUID, in
 		if len(batch) == 0 {
 			return
 		}
-		if err := i.ingestionStorage.StoreBatch(ctx, batch); err != nil {
+		if err := i.storage.StoreBatch(ctx, batch); err != nil {
 			log.Errorf("Failed to persist batch: %s", err)
 			lastErr = err
 			return
 		}
 
-		batchMsg := &domain.NormalizedEmailsBatchMessage{
+		batchMsg := &domain.NormalizedEmailBatchMessage{
 			BatchID:     uuid.New(),
 			TenantID:    batch[0].TenantID,
 			EmailIDList: extractEmailIDs(batch),

@@ -28,6 +28,6 @@ func (n *AMQPNotifier) NotifySuspectingFraudulentEmail(ctx context.Context, mess
 	return n.publisher.Publish(ctx, EmailExchange, domain.RoutingKeyFraudulentDetected, message)
 }
 
-func (n *AMQPNotifier) NotifyEmailBatchIngested(ctx context.Context, message *domain.NormalizedEmailsBatchMessage) error {
-	return n.publisher.Publish(ctx, EmailExchange, domain.RoutingKeyEmailIngested, message)
+func (n *AMQPNotifier) NotifyEmailBatchIngested(ctx context.Context, message *domain.NormalizedEmailBatchMessage) error {
+	return n.publisher.Publish(ctx, EmailExchange, domain.RoutingKeyEmailBatchIngested, message)
 }

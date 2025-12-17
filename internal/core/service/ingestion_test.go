@@ -16,7 +16,7 @@ import (
 
 type IngestionServiceSuite struct {
 	suite.Suite
-	ingestionStorage *mocks.IngestionStorage
+	storage          *mocks.EmailsStorage
 	ingestionService *IngestionService
 	amqpNotifier     *mocks.NotifierClient
 }
@@ -32,14 +32,14 @@ func (suite *IngestionServiceSuite) SetupSuite() {
 }
 
 func (suite *IngestionServiceSuite) TearDownTest() {
-	suite.ingestionStorage.AssertExpectations(suite.T())
+	suite.storage.AssertExpectations(suite.T())
 	suite.amqpNotifier.AssertExpectations(suite.T())
 }
 
 func (suite *IngestionServiceSuite) SetupTest() {
-	suite.ingestionStorage = &mocks.IngestionStorage{}
+	suite.storage = &mocks.EmailsStorage{}
 	suite.amqpNotifier = &mocks.NotifierClient{}
-	suite.ingestionService = NewIngestionService(suite.ingestionStorage, suite.amqpNotifier)
+	suite.ingestionService = NewIngestionService(suite.storage, suite.amqpNotifier)
 }
 
 func (suite *IngestionServiceSuite) TestRun_MicrosoftProvider() {
@@ -62,12 +62,12 @@ func (suite *IngestionServiceSuite) TestRun_MicrosoftProvider() {
 		UpdatedAt:      baseTime,
 	}
 
-	suite.ingestionStorage.EXPECT().GetTenant(ctx, tenantID).Return(tenant, nil)
-	suite.ingestionStorage.EXPECT().LoadCursor(ctx, tenantID, "microsoft", mock.Anything).Return(cursor, nil)
-	suite.ingestionStorage.EXPECT().UpsertCursor(ctx, mock.Anything).Return(nil)
+	suite.storage.EXPECT().GetTenant(ctx, tenantID).Return(tenant, nil)
+	suite.storage.EXPECT().LoadCursor(ctx, tenantID, "microsoft", mock.Anything).Return(cursor, nil)
+	suite.storage.EXPECT().UpsertCursor(ctx, mock.Anything).Return(nil)
 
 	// Maybe because it's not mandatory there are emails
-	suite.ingestionStorage.EXPECT().StoreBatch(ctx, mock.Anything).Return(nil).Maybe()
+	suite.storage.EXPECT().StoreBatch(ctx, mock.Anything).Return(nil).Maybe()
 	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.Anything).Return(nil).Maybe()
 
 	err := suite.ingestionService.Run(ctx, tenantID)
@@ -95,12 +95,12 @@ func (suite *IngestionServiceSuite) TestRun_GoogleProvider() {
 		UpdatedAt:      baseTime,
 	}
 
-	suite.ingestionStorage.EXPECT().GetTenant(ctx, tenantID).Return(tenant, nil)
-	suite.ingestionStorage.EXPECT().LoadCursor(ctx, tenantID, "google", mock.Anything).Return(cursor, nil)
-	suite.ingestionStorage.EXPECT().UpsertCursor(ctx, mock.Anything).Return(nil)
+	suite.storage.EXPECT().GetTenant(ctx, tenantID).Return(tenant, nil)
+	suite.storage.EXPECT().LoadCursor(ctx, tenantID, "google", mock.Anything).Return(cursor, nil)
+	suite.storage.EXPECT().UpsertCursor(ctx, mock.Anything).Return(nil)
 
 	// Same as above
-	suite.ingestionStorage.EXPECT().StoreBatch(ctx, mock.Anything).Return(nil).Maybe()
+	suite.storage.EXPECT().StoreBatch(ctx, mock.Anything).Return(nil).Maybe()
 	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.Anything).Return(nil).Maybe()
 
 	err := suite.ingestionService.Run(ctx, tenantID)
@@ -114,7 +114,7 @@ func (suite *IngestionServiceSuite) TestRun_TenantNotFound() {
 	tenantID := uuid.New()
 
 	expectedErr := errors.New("tenant not found")
-	suite.ingestionStorage.EXPECT().GetTenant(ctx, tenantID).Return(nil, expectedErr)
+	suite.storage.EXPECT().GetTenant(ctx, tenantID).Return(nil, expectedErr)
 
 	err := suite.ingestionService.Run(ctx, tenantID)
 
@@ -132,7 +132,7 @@ func (suite *IngestionServiceSuite) TestRun_UnknownProvider() {
 		Name:     "Test Tenant",
 	}
 
-	suite.ingestionStorage.EXPECT().GetTenant(ctx, tenantID).Return(tenant, nil)
+	suite.storage.EXPECT().GetTenant(ctx, tenantID).Return(tenant, nil)
 
 	err := suite.ingestionService.Run(ctx, tenantID)
 
@@ -241,11 +241,11 @@ func (suite *IngestionServiceSuite) TestBatchWriter_SmallBatch() {
 	close(emailCh)
 
 	// Mock the storage to expect a batch
-	suite.ingestionStorage.EXPECT().StoreBatch(ctx, mock.MatchedBy(func(batch []domain.Email) bool {
+	suite.storage.EXPECT().StoreBatch(ctx, mock.MatchedBy(func(batch []domain.Email) bool {
 		return len(batch) == 2
 	})).Return(nil).Once()
 
-	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.AnythingOfType("*domain.NormalizedEmailsBatchMessage")).Return(nil).Once()
+	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.AnythingOfType("*domain.NormalizedEmailBatchMessage")).Return(nil).Once()
 
 	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, 500)
 
@@ -278,15 +278,15 @@ func (suite *IngestionServiceSuite) TestBatchWriter_LargeBatch() {
 	close(emailCh)
 
 	// Expect 3 batches: 10 + 10 + 5
-	suite.ingestionStorage.EXPECT().StoreBatch(ctx, mock.MatchedBy(func(batch []domain.Email) bool {
+	suite.storage.EXPECT().StoreBatch(ctx, mock.MatchedBy(func(batch []domain.Email) bool {
 		return len(batch) == 10
 	})).Return(nil).Twice() // Handles the 2 first batches
 
-	suite.ingestionStorage.EXPECT().StoreBatch(ctx, mock.MatchedBy(func(batch []domain.Email) bool {
+	suite.storage.EXPECT().StoreBatch(ctx, mock.MatchedBy(func(batch []domain.Email) bool {
 		return len(batch) == 5
 	})).Return(nil).Once()
 
-	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.AnythingOfType("*domain.NormalizedEmailsBatchMessage")).Return(nil).Times(3)
+	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.AnythingOfType("*domain.NormalizedEmailBatchMessage")).Return(nil).Times(3)
 
 	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, batchSize)
 
@@ -315,7 +315,7 @@ func (suite *IngestionServiceSuite) TestBatchWriter_StorageError() {
 	close(emailCh)
 
 	expectedErr := errors.New("storage error")
-	suite.ingestionStorage.EXPECT().StoreBatch(ctx, mock.Anything).Return(expectedErr).Once()
+	suite.storage.EXPECT().StoreBatch(ctx, mock.Anything).Return(expectedErr).Once()
 
 	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, 500)
 
@@ -376,14 +376,14 @@ func (suite *IngestionServiceSuite) TestIngestMicrosoftUser_CursorUpdate_Without
 		UpdatedAt:      baseTime,
 	}
 
-	suite.ingestionStorage.EXPECT().LoadCursor(ctx, tenantID, "microsoft", userID).Return(cursor, nil)
+	suite.storage.EXPECT().LoadCursor(ctx, tenantID, "microsoft", userID).Return(cursor, nil)
 
 	// Empty batch
-	suite.ingestionStorage.EXPECT().StoreBatch(ctx, mock.Anything).Return(nil).Maybe()
+	suite.storage.EXPECT().StoreBatch(ctx, mock.Anything).Return(nil).Maybe()
 	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.Anything).Return(nil).Maybe()
 
 	// Verify it's the same cursor (no emails means no update)
-	suite.ingestionStorage.EXPECT().UpsertCursor(ctx, mock.MatchedBy(func(c *domain.IngestionCursor) bool {
+	suite.storage.EXPECT().UpsertCursor(ctx, mock.MatchedBy(func(c *domain.IngestionCursor) bool {
 		return c.TenantID == tenantID && c.UserID == userID && c.LastReceivedAt.Equal(baseTime)
 	})).Return(nil)
 
@@ -404,7 +404,7 @@ func (suite *IngestionServiceSuite) TestIngestMicrosoftUser_LoadCursorError() {
 	}
 
 	expectedErr := errors.New("cursor load error")
-	suite.ingestionStorage.EXPECT().LoadCursor(ctx, tenantID, "microsoft", userID).Return(nil, expectedErr)
+	suite.storage.EXPECT().LoadCursor(ctx, tenantID, "microsoft", userID).Return(nil, expectedErr)
 
 	err := suite.ingestionService.ingestMicrosoftUser(ctx, tenantID, user)
 
@@ -432,13 +432,13 @@ func (suite *IngestionServiceSuite) TestIngestGoogleUser_CursorUpdate() {
 		UpdatedAt:      baseTime,
 	}
 
-	suite.ingestionStorage.EXPECT().LoadCursor(ctx, tenantID, "google", userID).Return(cursor, nil)
+	suite.storage.EXPECT().LoadCursor(ctx, tenantID, "google", userID).Return(cursor, nil)
 
 	// Empty batch
-	suite.ingestionStorage.EXPECT().StoreBatch(ctx, mock.Anything).Return(nil).Maybe()
+	suite.storage.EXPECT().StoreBatch(ctx, mock.Anything).Return(nil).Maybe()
 	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.Anything).Return(nil).Maybe()
 
-	suite.ingestionStorage.EXPECT().UpsertCursor(ctx, mock.MatchedBy(func(c *domain.IngestionCursor) bool {
+	suite.storage.EXPECT().UpsertCursor(ctx, mock.MatchedBy(func(c *domain.IngestionCursor) bool {
 		return c.TenantID == tenantID && c.UserID == userID
 	})).Return(nil)
 
@@ -459,7 +459,7 @@ func (suite *IngestionServiceSuite) TestIngestGoogleUser_LoadCursorError() {
 	}
 
 	expectedErr := errors.New("cursor load error")
-	suite.ingestionStorage.EXPECT().LoadCursor(ctx, tenantID, "google", userID).Return(nil, expectedErr)
+	suite.storage.EXPECT().LoadCursor(ctx, tenantID, "google", userID).Return(nil, expectedErr)
 
 	err := suite.ingestionService.ingestGoogleUser(ctx, tenantID, user)
 
