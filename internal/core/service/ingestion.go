@@ -58,6 +58,12 @@ func (i *IngestionService) ingestMicrosoftTenant(ctx context.Context, tenantID u
 		go func(workerID int) {
 			defer wg.Done()
 			for user := range userCh {
+				select {
+				case <-ctx.Done():
+					log.Warnf("[Worker %d] Context cancelled, stopping ingestion", workerID)
+					return
+				default:
+				}
 				if err := i.ingestMicrosoftUser(ctx, tenantID, user); err != nil {
 					log.Errorf("[Worker %d] Failed to ingest user %s: %v", workerID, user.UserID, err)
 					// Do not block if one fails
@@ -93,6 +99,12 @@ func (i *IngestionService) ingestGoogleTenant(ctx context.Context, tenantID uuid
 		go func(workerID int) {
 			defer wg.Done()
 			for user := range userCh {
+				select {
+				case <-ctx.Done():
+					log.Warnf("[Worker %d] Context cancelled, stopping ingestion", workerID)
+					return
+				default:
+				}
 				if err := i.ingestGoogleUser(ctx, tenantID, user); err != nil {
 					log.Errorf("[Worker %d] Failed to ingest user %s: %v", workerID, user.UserID, err)
 				}
@@ -126,6 +138,11 @@ func (i *IngestionService) ingestMicrosoftUser(ctx context.Context, tenantID uui
 	if err != nil {
 		return err
 	}
+
+	if len(emails) == 0 {
+		return nil
+	}
+
 	maxSeen := cursor.LastReceivedAt
 
 	// Create buffered channel for normalized emails
@@ -134,23 +151,39 @@ func (i *IngestionService) ingestMicrosoftUser(ctx context.Context, tenantID uui
 
 	// Start batch writer goroutine
 	go func() {
-		errCh <- i.batchWriter(ctx, user.UserID, emailCh, 500)
+		errCh <- i.BatchWriter(ctx, tenantID, user.UserID, emailCh, 500)
 	}()
 
-	for _, email := range emails {
-		normalized := i.NormalizeMicrosoftEmail(tenantID, user.UserID, email)
-		emailCh <- normalized
+	normalizeErr := func() error {
+		for _, email := range emails {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			normalized := i.NormalizeMicrosoftEmail(tenantID, user.UserID, email)
+			emailCh <- normalized
 
-		if email.ReceivedAt.After(maxSeen) {
-			maxSeen = email.ReceivedAt
+			if email.ReceivedAt.After(maxSeen) {
+				maxSeen = email.ReceivedAt
+			}
 		}
-	}
+		return nil
+	}()
 
 	// Close channel to signal batch writer to finish
 	close(emailCh)
 
-	if err := <-errCh; err != nil {
-		return err
+	// Wait for batch writer to finish
+	batchErr := <-errCh
+
+	if normalizeErr != nil {
+		return normalizeErr
+	}
+
+	// If batch writer failed, don't update cursor
+	if batchErr != nil {
+		return batchErr
 	}
 
 	cursor.LastReceivedAt = maxSeen
@@ -175,29 +208,50 @@ func (i *IngestionService) ingestGoogleUser(ctx context.Context, tenantID uuid.U
 	if err != nil {
 		return err
 	}
+
+	if len(emails) == 0 {
+		return nil
+	}
+
 	maxSeen := cursor.LastReceivedAt
 
 	emailCh := make(chan domain.Email, 10_000)
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- i.batchWriter(ctx, user.UserID, emailCh, 500)
+		errCh <- i.BatchWriter(ctx, tenantID, user.UserID, emailCh, 500)
 	}()
 
-	for _, email := range emails {
-		normalized := i.NormalizeGoogleEmail(tenantID, user.UserID, email)
-		emailCh <- normalized
+	normalizeErr := func() error {
+		for _, email := range emails {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			normalized := i.NormalizeGoogleEmail(tenantID, user.UserID, email)
+			emailCh <- normalized
 
-		if email.ReceivedAt.After(maxSeen) {
-			maxSeen = email.ReceivedAt
+			if email.ReceivedAt.After(maxSeen) {
+				maxSeen = email.ReceivedAt
+			}
 		}
-	}
+		return nil
+	}()
 
 	// Close channel to signal batch writer to finish
 	close(emailCh)
 
-	if err := <-errCh; err != nil {
-		return err
+	// Wait for batch writer to finish, even if context was cancelled
+	batchErr := <-errCh
+
+	if normalizeErr != nil {
+		return normalizeErr
+	}
+
+	// If batch writer failed, don't update cursor
+	if batchErr != nil {
+		return batchErr
 	}
 
 	cursor.LastReceivedAt = maxSeen
@@ -215,6 +269,10 @@ func (i *IngestionService) GetMicrosoftUsers(ctx context.Context, tenantID uuid.
 }
 
 func (i *IngestionService) GetMicrosoftEmails(ctx context.Context, userID uuid.UUID, receivedAfter time.Time, orderBy string) ([]domain.MicrosoftEmail, error) {
+
+	// Here it will basically make an API call to Microsoft Graph to fetch emails for the user since receivedAfter.
+	// Be sure to use context.WithTimeout not to hang forever.
+
 	return nil, nil
 }
 
@@ -227,6 +285,10 @@ func (i *IngestionService) GetGoogleUsers(ctx context.Context, tenantID uuid.UUI
 }
 
 func (i *IngestionService) GetGoogleEmails(ctx context.Context, userID uuid.UUID, receivedAfter time.Time, orderBy string) ([]domain.GoogleEmail, error) {
+
+	// Here it will basically make an API call to Google Gmail API to fetch emails for the user since receivedAfter.
+	// Be sure to use context.WithTimeout not to hang forever.
+
 	return nil, nil
 }
 
@@ -268,34 +330,38 @@ func (i *IngestionService) NormalizeGoogleEmail(tenantID uuid.UUID, userID uuid.
 	}
 }
 
-// Here we batch process emails (chunks of 500) not to overflow DB by calling it too much
-func (i *IngestionService) batchWriter(ctx context.Context, userID uuid.UUID, in <-chan domain.Email, batchSize int) error {
+// BatchWriter processes emails in batches and notifies when each batch is stored.
+// Exported for testing purposes.
+func (i *IngestionService) BatchWriter(ctx context.Context, tenantID uuid.UUID, userID uuid.UUID, in <-chan domain.Email, batchSize int) error {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
 	batch := make([]domain.Email, 0, batchSize)
-	var lastErr error
 
-	flush := func() {
+	flush := func() error {
 		if len(batch) == 0 {
-			return
+			return nil
 		}
 		if err := i.storage.StoreBatch(ctx, batch); err != nil {
 			log.Errorf("Failed to persist batch: %s", err)
-			lastErr = err
-			return
+			return err
 		}
 
 		batchMsg := &domain.NormalizedEmailBatchMessage{
 			BatchID:     uuid.New(),
-			TenantID:    batch[0].TenantID,
-			EmailIDList: extractEmailIDs(batch),
+			TenantID:    tenantID,
 			UserID:      userID,
+			EmailIDList: ExtractEmailIDs(batch),
 		}
 
-		i.notifierClient.NotifyEmailBatchIngested(ctx, batchMsg)
+		if err := i.notifierClient.NotifyEmailBatchIngested(ctx, batchMsg); err != nil {
+			log.Errorf("Failed to notify email batch ingested: %s", err)
+			return err
+		}
 
+		// Reset slice while keeping capacity
 		batch = batch[:0]
+		return nil
 	}
 
 	for {
@@ -303,25 +369,29 @@ func (i *IngestionService) batchWriter(ctx context.Context, userID uuid.UUID, in
 		case email, ok := <-in:
 			if !ok {
 				// Channel closed, flush and return
-				flush()
-				return lastErr
+				return flush()
 			}
 			batch = append(batch, email)
 			if len(batch) >= batchSize {
-				flush()
+				if err := flush(); err != nil {
+					return err
+				}
 			}
 
 		case <-ticker.C:
-			flush()
+			if err := flush(); err != nil {
+				return err
+			}
 
 		case <-ctx.Done():
-			flush()
-			return lastErr
+			// Attempt final flush before exiting
+			_ = flush()
+			return ctx.Err()
 		}
 	}
 }
 
-func extractEmailIDs(batch []domain.Email) uuid.UUIDs {
+func ExtractEmailIDs(batch []domain.Email) uuid.UUIDs {
 	ids := make(uuid.UUIDs, 0, len(batch))
 	for _, email := range batch {
 		if id, err := uuid.Parse(email.MessageID); err == nil {

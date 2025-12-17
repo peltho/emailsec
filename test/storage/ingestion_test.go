@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"os"
 	"testing"
 
 	"github.com/google/uuid"
@@ -12,6 +11,7 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"stoik.com/emailsec/internal/storage"
+	"stoik.com/emailsec/test"
 )
 
 func TestIngestion(t *testing.T) {
@@ -36,7 +36,7 @@ func (suite *IngestionSuite) SetupSuite() {
 	suite.postgresCoreResource, err = pool.RunWithOptions(&dockertest.RunOptions{
 		Repository: "postgres",
 		Tag:        "16-alpine",
-		Env:        PostgresDockerEnv(),
+		Env:        test.PostgresDockerEnv(),
 	})
 	if err != nil {
 		suite.T().Fatalf("Could not run postgres from docker: %s", err)
@@ -48,7 +48,7 @@ func (suite *IngestionSuite) SetupSuite() {
 	// Retry connection until Docker container is ready
 	if err = pool.Retry(func() error {
 		var err error
-		suite.postgresDB, err = sql.Open("pgx", PostgresDSN(port))
+		suite.postgresDB, err = sql.Open("pgx", test.PostgresDSN(port))
 		if err != nil {
 			return err
 		}
@@ -59,7 +59,7 @@ func (suite *IngestionSuite) SetupSuite() {
 
 	if !suite.T().Failed() {
 		ctx := context.Background()
-		postgresDB, err := storage.NewPostgresDB(ctx, PostgresHost, port, PostgresUser, PostgresPassword, PostgresDB)
+		postgresDB, err := storage.NewPostgresDB(ctx, test.PostgresHost, port, test.PostgresUser, test.PostgresPassword, test.PostgresDB)
 		if err != nil {
 			suite.T().Fatalf("Failed to connect to database: %v", err)
 		}
@@ -68,26 +68,10 @@ func (suite *IngestionSuite) SetupSuite() {
 	}
 }
 
-func (suite *IngestionSuite) ExecFile(t *testing.T, file string) {
-	if t.Failed() {
-		return
-	}
-	fileContent, err := os.ReadFile(file)
-	if err != nil {
-		t.Errorf("cannot read sql file %v", err)
-		return
-	}
-	sql := string(fileContent)
-	_, err = suite.postgresDB.Exec(sql)
-	if err != nil {
-		t.Errorf("cannot execute sql file %v", err)
-		return
-	}
-}
-
 func (suite *IngestionSuite) SetupTest() {
-	suite.ExecFile(suite.T(), "../sql/create_tables.sql")
-	suite.ExecFile(suite.T(), "../sql/fixtures.sql")
+	test.ExecFile(suite.T(), suite.postgresDB, "../sql/create_tables.sql")
+	test.ExecFile(suite.T(), suite.postgresDB, "../sql/fixtures.sql")
+
 	if suite.T().Failed() {
 		suite.TearDownSuite()
 		suite.T().FailNow()
@@ -111,3 +95,5 @@ func (suite *IngestionSuite) TestGetTenant_OK() {
 	suite.NoError(err)
 	suite.Assert().Equal("Voyage Privé", tenant.Name)
 }
+
+// Other storage methods can be tested here

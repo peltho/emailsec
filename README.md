@@ -5,10 +5,11 @@
 1. **Ingestion service** - Ingest all tenant's emails
 * Expect a HTTP POST call to `/api/v1/emails/ingest` with `tenant_id` as body
 * Normalize emails (may differ per provider)
-* Store normalized email batches into DB
+* Store normalized email batches (of 500 by default) into DB
 * Notify broker about processed batches
 
 2. **Fraud detection service** - Detect potential frauds based on pre-defined rules
+* Expect to receive broker messages with email ID list (500 max by default)
 * Flag email based on severity level
 * Send warnings when severity is exceeding a given threshold 
 

@@ -1,4 +1,10 @@
-package storage
+package test
+
+import (
+	"database/sql"
+	"os"
+	"testing"
+)
 
 // Postgres test database configuration
 const (
@@ -19,5 +25,22 @@ func PostgresDockerEnv() []string {
 		"POSTGRES_USER=" + PostgresUser,
 		"POSTGRES_PASSWORD=" + PostgresPassword,
 		"POSTGRES_DB=" + PostgresDB,
+	}
+}
+
+func ExecFile(t *testing.T, db *sql.DB, file string) {
+	if t.Failed() {
+		return
+	}
+	fileContent, err := os.ReadFile(file)
+	if err != nil {
+		t.Errorf("cannot read sql file %v", err)
+		return
+	}
+	sql := string(fileContent)
+	_, err = db.Exec(sql)
+	if err != nil {
+		t.Errorf("cannot execute sql file %v", err)
+		return
 	}
 }

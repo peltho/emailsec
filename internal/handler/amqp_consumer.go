@@ -38,7 +38,7 @@ func (c *AMQPConsumer) Handle(ctx context.Context, delivery *amqp.Delivery) {
 	}
 
 	if err != nil {
-		delivery.Nack(false, false)
+		delivery.Nack(false, false) // Send to a retry / dead-letter queue instead
 		return
 	}
 	delivery.Ack(false)

@@ -64,9 +64,8 @@ func (suite *IngestionServiceSuite) TestRun_MicrosoftProvider() {
 
 	suite.storage.EXPECT().GetTenant(ctx, tenantID).Return(tenant, nil)
 	suite.storage.EXPECT().LoadCursor(ctx, tenantID, "microsoft", mock.Anything).Return(cursor, nil)
-	suite.storage.EXPECT().UpsertCursor(ctx, mock.Anything).Return(nil)
-
-	// Maybe because it's not mandatory there are emails
+	// Below are called if there are mails
+	suite.storage.EXPECT().UpsertCursor(ctx, mock.Anything).Return(nil).Maybe()
 	suite.storage.EXPECT().StoreBatch(ctx, mock.Anything).Return(nil).Maybe()
 	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.Anything).Return(nil).Maybe()
 
@@ -97,9 +96,8 @@ func (suite *IngestionServiceSuite) TestRun_GoogleProvider() {
 
 	suite.storage.EXPECT().GetTenant(ctx, tenantID).Return(tenant, nil)
 	suite.storage.EXPECT().LoadCursor(ctx, tenantID, "google", mock.Anything).Return(cursor, nil)
-	suite.storage.EXPECT().UpsertCursor(ctx, mock.Anything).Return(nil)
 
-	// Same as above
+	suite.storage.EXPECT().UpsertCursor(ctx, mock.Anything).Return(nil).Maybe()
 	suite.storage.EXPECT().StoreBatch(ctx, mock.Anything).Return(nil).Maybe()
 	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.Anything).Return(nil).Maybe()
 
@@ -247,7 +245,7 @@ func (suite *IngestionServiceSuite) TestBatchWriter_SmallBatch() {
 
 	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.AnythingOfType("*domain.NormalizedEmailBatchMessage")).Return(nil).Once()
 
-	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, 500)
+	err := suite.ingestionService.BatchWriter(ctx, tenantID, userID, emailCh, 500)
 
 	assert.NoError(suite.T(), err)
 }
@@ -288,7 +286,7 @@ func (suite *IngestionServiceSuite) TestBatchWriter_LargeBatch() {
 
 	suite.amqpNotifier.EXPECT().NotifyEmailBatchIngested(ctx, mock.AnythingOfType("*domain.NormalizedEmailBatchMessage")).Return(nil).Times(3)
 
-	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, batchSize)
+	err := suite.ingestionService.BatchWriter(ctx, tenantID, userID, emailCh, batchSize)
 
 	assert.NoError(suite.T(), err)
 }
@@ -317,7 +315,7 @@ func (suite *IngestionServiceSuite) TestBatchWriter_StorageError() {
 	expectedErr := errors.New("storage error")
 	suite.storage.EXPECT().StoreBatch(ctx, mock.Anything).Return(expectedErr).Once()
 
-	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, 500)
+	err := suite.ingestionService.BatchWriter(ctx, tenantID, userID, emailCh, 500)
 
 	assert.Error(suite.T(), err)
 	assert.Equal(suite.T(), expectedErr, err)
@@ -326,11 +324,12 @@ func (suite *IngestionServiceSuite) TestBatchWriter_StorageError() {
 func (suite *IngestionServiceSuite) TestBatchWriter_EmptyChannel() {
 	ctx := context.Background()
 	userID := uuid.New()
+	tenantID := uuid.New()
 
 	emailCh := make(chan domain.Email)
 	close(emailCh)
 
-	err := suite.ingestionService.batchWriter(ctx, userID, emailCh, 500)
+	err := suite.ingestionService.BatchWriter(ctx, tenantID, userID, emailCh, 500)
 
 	assert.NoError(suite.T(), err)
 }
@@ -347,7 +346,7 @@ func (suite *IngestionServiceSuite) TestExtractEmailIDs() {
 		{MessageID: validID3},
 	}
 
-	ids := extractEmailIDs(emails)
+	ids := ExtractEmailIDs(emails)
 
 	// Should have 3 valid UUIDs (invalid one is skipped)
 	assert.Equal(suite.T(), 3, len(ids))
@@ -385,7 +384,7 @@ func (suite *IngestionServiceSuite) TestIngestMicrosoftUser_CursorUpdate_Without
 	// Verify it's the same cursor (no emails means no update)
 	suite.storage.EXPECT().UpsertCursor(ctx, mock.MatchedBy(func(c *domain.IngestionCursor) bool {
 		return c.TenantID == tenantID && c.UserID == userID && c.LastReceivedAt.Equal(baseTime)
-	})).Return(nil)
+	})).Return(nil).Maybe()
 
 	err := suite.ingestionService.ingestMicrosoftUser(ctx, tenantID, user)
 
@@ -440,7 +439,7 @@ func (suite *IngestionServiceSuite) TestIngestGoogleUser_CursorUpdate() {
 
 	suite.storage.EXPECT().UpsertCursor(ctx, mock.MatchedBy(func(c *domain.IngestionCursor) bool {
 		return c.TenantID == tenantID && c.UserID == userID
-	})).Return(nil)
+	})).Return(nil).Maybe()
 
 	err := suite.ingestionService.ingestGoogleUser(ctx, tenantID, user)
 
