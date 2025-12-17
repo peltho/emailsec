@@ -5,14 +5,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	log "github.com/sirupsen/logrus"
-)
-
-const (
-	EmailExchange = "email"
-
-	EmailAnalysisQueue = "email.analysis"
-
-	RoutingKeyEmailIngested = "email.ingested"
+	"stoik.com/emailsec/internal/core/domain"
 )
 
 // TopologyManager handles the declaration of exchanges, queues, and bindings
@@ -31,17 +24,17 @@ func (t *TopologyManager) Setup() error {
 	ch := t.client.Channel()
 
 	// Declare email exchange
-	if err := t.declareExchange(ch, EmailExchange); err != nil {
+	if err := t.declareExchange(ch, domain.EmailExchange); err != nil {
 		return err
 	}
 
 	// Declare email analysis queue
-	if err := t.declareQueue(ch, EmailAnalysisQueue); err != nil {
+	if err := t.declareQueue(ch, domain.EmailAnalysisQueue); err != nil {
 		return err
 	}
 
 	// Bind queue to exchange
-	if err := t.bindQueue(ch, EmailAnalysisQueue, EmailExchange, RoutingKeyEmailIngested); err != nil {
+	if err := t.bindQueue(ch, domain.EmailAnalysisQueue, domain.EmailExchange, domain.RoutingKeyEmailBatchIngested); err != nil {
 		return err
 	}
 

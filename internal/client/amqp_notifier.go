@@ -4,30 +4,23 @@ import (
 	"context"
 
 	"stoik.com/emailsec/internal/core/domain"
+	"stoik.com/emailsec/internal/infrastructure/amqp"
 )
-
-const (
-	EmailExchange = "email"
-)
-
-type Publisher interface {
-	Publish(ctx context.Context, exchange, routingKey string, message any) error
-}
 
 type AMQPNotifier struct {
-	publisher Publisher
+	publisher amqp.Publisher
 }
 
-func NewAMQPNotifier(publisher Publisher) *AMQPNotifier {
+func NewAMQPNotifier(publisher amqp.Publisher) *AMQPNotifier {
 	return &AMQPNotifier{
 		publisher: publisher,
 	}
 }
 
 func (n *AMQPNotifier) NotifySuspectingFraudulentEmail(ctx context.Context, message *domain.SuspectingFraudulentEmailMessage) error {
-	return n.publisher.Publish(ctx, EmailExchange, domain.RoutingKeyFraudulentDetected, message)
+	return n.publisher.Publish(ctx, domain.EmailExchange, domain.RoutingKeyFraudulentDetected, message)
 }
 
 func (n *AMQPNotifier) NotifyEmailBatchIngested(ctx context.Context, message *domain.NormalizedEmailBatchMessage) error {
-	return n.publisher.Publish(ctx, EmailExchange, domain.RoutingKeyEmailBatchIngested, message)
+	return n.publisher.Publish(ctx, domain.EmailExchange, domain.RoutingKeyEmailBatchIngested, message)
 }

@@ -10,6 +10,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"stoik.com/emailsec/internal/client"
+	"stoik.com/emailsec/internal/core/domain"
 	"stoik.com/emailsec/internal/core/service"
 	"stoik.com/emailsec/internal/handler"
 	"stoik.com/emailsec/internal/infrastructure/amqp"
@@ -36,7 +37,7 @@ func main() {
 	}
 	defer amqpClient.Close()
 	publisher := amqp.NewPublisher(amqpClient)
-	notifier := client.NewAMQPNotifier(publisher)
+	notifier := client.NewAMQPNotifier(*publisher)
 
 	ctx := context.Background()
 	db, err := storage.NewPostgresDB(ctx, dbHost, dbPort, dbUser, dbPassword, dbName)
@@ -64,12 +65,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := consumer.Consume(ctx, amqp.EmailAnalysisQueue); err != nil {
+	if err := consumer.Consume(ctx, domain.EmailAnalysisQueue); err != nil {
 		log.Fatalf("Failed to start consumer: %v", err)
 	}
 
 	log.Info("Fraud detection service started successfully")
-	log.Infof("Consuming messages from queue: %s", amqp.EmailAnalysisQueue)
+	log.Infof("Consuming messages from queue: %s", domain.EmailAnalysisQueue)
 
 	// You can use the notifier to send messages when fraud is detected
 	_ = notifier

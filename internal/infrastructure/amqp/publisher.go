@@ -10,12 +10,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Publisher publishes messages to RabbitMQ
 type Publisher struct {
 	client *Client
 }
 
-// NewPublisher creates a new publisher
 func NewPublisher(client *Client) *Publisher {
 	return &Publisher{
 		client: client,

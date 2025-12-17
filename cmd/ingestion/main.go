@@ -37,7 +37,7 @@ func main() {
 	}
 	defer amqpClient.Close()
 	publisher := amqp.NewPublisher(amqpClient)
-	notifier := client.NewAMQPNotifier(publisher)
+	notifier := client.NewAMQPNotifier(*publisher)
 
 	ctx := context.Background()
 	db, err := storage.NewPostgresDB(ctx, dbHost, dbPort, dbUser, dbPassword, dbName)

@@ -11,6 +11,12 @@ var (
 	RoutingKeyFraudulentDetected = "email.fraud.detected"
 )
 
+const (
+	EmailExchange           = "email"
+	EmailAnalysisQueue      = "email.analysis"
+	RoutingKeyEmailIngested = "email.ingested"
+)
+
 type NormalizedEmailBatchMessage struct {
 	BatchID     uuid.UUID  `json:"batch_id" validate:"required"`
 	TenantID    uuid.UUID  `json:"tenant_id" validate:"required"`
