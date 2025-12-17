@@ -49,6 +49,7 @@ func (f *FraudDetectionService) Run(ctx context.Context, batchMessage domain.Nor
 		return fmt.Errorf("failed to fetch emails from batch: %w", err)
 	}
 
+	// Create a worker pool to process emails concurrently
 	processedCount, failedCount := f.processConcurrently(ctx, batchMessage, emails)
 
 	log.WithFields(log.Fields{
@@ -155,8 +156,10 @@ func (f *FraudDetectionService) processEmailFromBatch(
 	}
 
 	// TODO: store the flag back on the email?
-	// if so, is it ok to make a DB call for each email (if not a lot of frauds, I suppose..)
-	// and send a notification via the broker?
+	// if so, is it ok to make a DB call for each email (if not a lot of frauds, I suppose..) and notify
+	// too many frauds: batch update like ingestion does
+	// or: publish a message per fraudulent email in another queue and consume them elsewhere (another consumer for instance)
+	// then beware of DB concurrent access to email records!
 
 	return nil
 }
