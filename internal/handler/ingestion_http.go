@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -32,7 +33,6 @@ func NewIngestionHTTPHandler(ingestionService port.IngestionService) *IngestionH
 func (h *IngestionHTTPHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		var req IngestTenantRequest
-		ctx := c.Request().Context()
 
 		if err := c.Bind(&req); err != nil {
 			log.WithError(err).Error("Failed to bind request")
@@ -43,7 +43,8 @@ func (h *IngestionHTTPHandler) Handle() echo.HandlerFunc {
 
 		// Run ingestion asynchronously since it can take time
 		go func() {
-			if err := h.ingestionService.Run(ctx, req.TenantID); err != nil {
+			newCtx := context.Background()
+			if err := h.ingestionService.Run(newCtx, req.TenantID); err != nil {
 				log.WithError(err).WithField("tenant_id", req.TenantID).Error("Ingestion failed")
 			}
 		}()
