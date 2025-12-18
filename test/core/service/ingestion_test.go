@@ -3,16 +3,20 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/ory/dockertest/v3"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
+	"stoik.com/emailsec/internal/client"
 	"stoik.com/emailsec/internal/core/domain"
 	"stoik.com/emailsec/internal/core/service"
+	infraamqp "stoik.com/emailsec/internal/infrastructure/amqp"
 	"stoik.com/emailsec/internal/storage"
 	"stoik.com/emailsec/mocks"
 	"stoik.com/emailsec/test"
@@ -24,11 +28,13 @@ func TestIngestion(t *testing.T) {
 
 type IngestionSuite struct {
 	suite.Suite
-	dockerPool           *dockertest.Pool
-	postgresCoreResource *dockertest.Resource
-	postgresDB           *sql.DB
-	ingestionService     *service.IngestionService
-	storage              *storage.EmailsStorage
+	dockerPool       *dockertest.Pool
+	postgresResource *dockertest.Resource
+	rmqResource      *dockertest.Resource
+	postgresDB       *sql.DB
+	ingestionService *service.IngestionService
+	storage          *storage.EmailsStorage
+	rmqConnection    *amqp.Connection
 }
 
 func (suite *IngestionSuite) SetupSuite() {
@@ -38,29 +44,13 @@ func (suite *IngestionSuite) SetupSuite() {
 	}
 	suite.dockerPool = pool
 
-	suite.postgresCoreResource, err = pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: "postgres",
-		Tag:        "16-alpine",
-		Env:        test.PostgresDockerEnv(),
-	})
-	if err != nil {
-		suite.T().Fatalf("Could not run postgres from docker: %s", err)
-	}
+	db, port, pgResource := test.SetupPostgresDB(suite.T(), pool)
+	suite.postgresDB = db
+	suite.postgresResource = pgResource
 
-	// Get the dynamically assigned port
-	port := suite.postgresCoreResource.GetPort("5432/tcp")
-
-	// Retry connection until Docker container is ready
-	if err = pool.Retry(func() error {
-		var err error
-		suite.postgresDB, err = sql.Open("pgx", test.PostgresDSN(port))
-		if err != nil {
-			return err
-		}
-		return suite.postgresDB.Ping()
-	}); err != nil {
-		suite.T().Fatalf("Could not connect to postgres: %s", err)
-	}
+	conn, rmqResource := test.SetupRabbitMQ(suite.T(), pool)
+	suite.rmqConnection = conn
+	suite.rmqResource = rmqResource
 
 	if !suite.T().Failed() {
 		ctx := context.Background()
@@ -92,8 +82,16 @@ func (suite *IngestionSuite) TearDownSuite() {
 	if suite.postgresDB != nil {
 		_ = suite.postgresDB.Close()
 	}
-	if suite.postgresCoreResource != nil {
-		_ = suite.dockerPool.Purge(suite.postgresCoreResource)
+	if suite.rmqConnection != nil {
+		_ = suite.rmqConnection.Close()
+	}
+	if suite.dockerPool != nil {
+		if suite.postgresResource != nil {
+			_ = suite.dockerPool.Purge(suite.postgresResource)
+		}
+		if suite.rmqResource != nil {
+			_ = suite.dockerPool.Purge(suite.rmqResource)
+		}
 	}
 }
 
@@ -238,6 +236,137 @@ func (suite *IngestionSuite) TestBatchWriter_NotifiesOnBatch() {
 
 	// Verify it was called exactly once
 	mockNotifier.AssertNumberOfCalls(suite.T(), "NotifyEmailBatchIngested", 1)
+}
+
+func (suite *IngestionSuite) TestBatchWriter_NotifiesOnBatch_RabbitMQ() {
+	ctx := context.Background()
+
+	tenantID, _ := uuid.Parse("d290f1ee-6c54-4b01-90e6-d701748f0851")
+	userID := uuid.New()
+
+	ch, err := suite.rmqConnection.Channel()
+	suite.NoError(err)
+
+	// Setup topology manually: declare exchange
+	err = ch.ExchangeDeclare(
+		domain.EmailExchange,
+		"topic", // type
+		true,    // durable
+		false,   // auto-deleted
+		false,   // internal
+		false,   // no-wait
+		nil,     // arguments
+	)
+	suite.NoError(err)
+
+	// Declare queue
+	queue, err := ch.QueueDeclare(
+		domain.EmailAnalysisQueue, // queue name
+		true,                      // durable
+		false,                     // delete when unused
+		false,                     // exclusive
+		false,                     // no-wait
+		nil,                       // arguments
+	)
+	suite.NoError(err)
+
+	// Bind queue to exchange
+	err = ch.QueueBind(
+		domain.EmailAnalysisQueue,
+		domain.RoutingKeyEmailBatchIngested,
+		domain.EmailExchange,
+		false, // no-wait
+		nil,   // arguments
+	)
+	suite.NoError(err)
+
+	// Purge the queue to ensure clean state (should already be empty)
+	_, err = ch.QueuePurge(queue.Name, false)
+	suite.NoError(err)
+
+	// Create AMQP client wrapper using the existing connection
+	rmqPort := suite.rmqResource.GetPort("5672/tcp")
+	rmqURL := test.RabbitMQURL(rmqPort)
+	amqpClient, err := infraamqp.NewClient(rmqURL)
+	suite.NoError(err)
+	defer amqpClient.Close()
+
+	// Create real publisher and notifier
+	publisher := infraamqp.NewPublisher(amqpClient)
+	notifier := client.NewAMQPNotifier(*publisher)
+
+	// Create ingestion service with real notifier
+	testService := service.NewIngestionService(suite.storage, notifier)
+
+	// Create a channel to send test emails
+	emailCh := make(chan domain.Email, 10)
+
+	// Start the batch writer in a goroutine
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- testService.BatchWriter(ctx, tenantID, userID, emailCh, 500)
+	}()
+
+	// Send 10 test emails through the channel
+	baseTime := time.Now().UTC()
+	for i := range 10 {
+		email := domain.Email{
+			TenantID:   tenantID,
+			UserID:     userID,
+			MessageID:  uuid.New().String(),
+			From:       "sender@example.com",
+			To:         []string{"recipient@example.com"},
+			Subject:    "Test Email",
+			Body:       "Test body",
+			Headers:    map[string]string{},
+			ReceivedAt: baseTime.Add(time.Duration(i) * time.Minute),
+			Provider:   "microsoft",
+		}
+		emailCh <- email
+	}
+	close(emailCh)
+
+	// Wait for batch writer to complete
+	err = <-errCh
+	suite.NoError(err)
+
+	// Verify emails were stored
+	var count int
+	err = suite.postgresDB.QueryRow("SELECT COUNT(*) FROM emails WHERE tenant_id = $1 AND user_id = $2", tenantID, userID).Scan(&count)
+	suite.NoError(err)
+	suite.Equal(10, count, "Expected 10 emails to be stored")
+
+	// Wait a bit for message to be published
+	time.Sleep(100 * time.Millisecond)
+
+	// Consume and verify the message content
+	msgs, err := ch.Consume(
+		domain.EmailAnalysisQueue, // queue
+		"",                        // consumer
+		true,                      // auto-ack
+		false,                     // exclusive
+		false,                     // no-local
+		false,                     // no-wait
+		nil,                       // args
+	)
+	suite.NoError(err)
+
+	// Wait for the message with timeout
+	select {
+	case msg := <-msgs:
+		suite.NotNil(msg.Body, "Expected message body")
+
+		// Decode and verify the message structure
+		var batchMsg domain.NormalizedEmailBatchMessage
+		err = json.Unmarshal(msg.Body, &batchMsg)
+		suite.NoError(err, "Failed to unmarshal message body")
+
+		suite.Equal(tenantID, batchMsg.TenantID, "TenantID mismatch")
+		suite.Equal(userID, batchMsg.UserID, "UserID mismatch")
+		suite.Equal(10, len(batchMsg.EmailIDList), "Expected 10 emails in batch")
+	case <-time.After(2 * time.Second):
+		suite.Fail("Timeout waiting for message from RabbitMQ")
+	}
 }
 
 func (suite *IngestionSuite) TestEmailStorage() {

@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"os"
 	"testing"
+
+	"github.com/ory/dockertest/v3"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 // Postgres test database configuration
@@ -43,4 +46,74 @@ func ExecFile(t *testing.T, db *sql.DB, file string) {
 		t.Errorf("cannot execute sql file %v", err)
 		return
 	}
+}
+
+func SetupPostgresDB(t *testing.T, pool *dockertest.Pool) (*sql.DB, string, *dockertest.Resource) {
+	postgresResource, err := pool.RunWithOptions(&dockertest.RunOptions{
+		Repository: "postgres",
+		Tag:        "16-alpine",
+		Env:        PostgresDockerEnv(),
+	})
+	if err != nil {
+		t.Fatalf("Could not run postgres from docker: %s", err)
+	}
+
+	// Get the dynamically assigned port
+	port := postgresResource.GetPort("5432/tcp")
+
+	var db *sql.DB
+	// Retry connection until Docker container is ready
+	if err = pool.Retry(func() error {
+		var err error
+		db, err = sql.Open("pgx", PostgresDSN(port))
+		if err != nil {
+			return err
+		}
+		return db.Ping()
+	}); err != nil {
+		t.Fatalf("Could not connect to postgres: %s", err)
+	}
+
+	return db, port, postgresResource
+}
+
+// RabbitMQ test configuration
+const (
+	RabbitMQUser     = "guest"
+	RabbitMQPassword = "guest"
+	RabbitMQHost     = "localhost"
+)
+
+// RabbitMQURL returns the AMQP URL for RabbitMQ connection with dynamic port
+func RabbitMQURL(port string) string {
+	return "amqp://" + RabbitMQUser + ":" + RabbitMQPassword + "@" + RabbitMQHost + ":" + port + "/"
+}
+
+// SetupRabbitMQ starts a RabbitMQ Docker container and returns a connection and port
+func SetupRabbitMQ(t *testing.T, pool *dockertest.Pool) (*amqp.Connection, *dockertest.Resource) {
+	rabbitResource, err := pool.RunWithOptions(&dockertest.RunOptions{
+		Repository: "rabbitmq",
+		Tag:        "3-management-alpine",
+	})
+	if err != nil {
+		t.Fatalf("Could not run rabbitmq from docker: %s", err)
+	}
+
+	// Get the dynamically assigned port
+	port := rabbitResource.GetPort("5672/tcp")
+
+	var conn *amqp.Connection
+	// Retry connection until Docker container is ready
+	if err = pool.Retry(func() error {
+		var err error
+		conn, err = amqp.Dial(RabbitMQURL(port))
+		if err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Could not connect to rabbitmq: %s", err)
+	}
+
+	return conn, rabbitResource
 }

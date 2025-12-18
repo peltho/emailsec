@@ -20,10 +20,10 @@ func TestIngestion(t *testing.T) {
 
 type IngestionSuite struct {
 	suite.Suite
-	dockerPool           *dockertest.Pool
-	postgresCoreResource *dockertest.Resource
-	postgresDB           *sql.DB
-	storage              *storage.EmailsStorage
+	dockerPool       *dockertest.Pool
+	postgresResource *dockertest.Resource
+	postgresDB       *sql.DB
+	storage          *storage.EmailsStorage
 }
 
 func (suite *IngestionSuite) SetupSuite() {
@@ -32,30 +32,9 @@ func (suite *IngestionSuite) SetupSuite() {
 		suite.T().Fatalf("Could not connect to docker: %s", err)
 	}
 	suite.dockerPool = pool
-
-	suite.postgresCoreResource, err = pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: "postgres",
-		Tag:        "16-alpine",
-		Env:        test.PostgresDockerEnv(),
-	})
-	if err != nil {
-		suite.T().Fatalf("Could not run postgres from docker: %s", err)
-	}
-
-	// Get the dynamically assigned port
-	port := suite.postgresCoreResource.GetPort("5432/tcp")
-
-	// Retry connection until Docker container is ready
-	if err = pool.Retry(func() error {
-		var err error
-		suite.postgresDB, err = sql.Open("pgx", test.PostgresDSN(port))
-		if err != nil {
-			return err
-		}
-		return suite.postgresDB.Ping()
-	}); err != nil {
-		suite.T().Fatalf("Could not connect to postgres: %s", err)
-	}
+	db, port, postgresResource := test.SetupPostgresDB(suite.T(), pool)
+	suite.postgresDB = db
+	suite.postgresResource = postgresResource
 
 	if !suite.T().Failed() {
 		ctx := context.Background()
@@ -82,8 +61,10 @@ func (suite *IngestionSuite) TearDownSuite() {
 	if suite.postgresDB != nil {
 		_ = suite.postgresDB.Close()
 	}
-	if suite.postgresCoreResource != nil {
-		_ = suite.dockerPool.Purge(suite.postgresCoreResource)
+	if suite.dockerPool != nil {
+		if suite.postgresResource != nil {
+			_ = suite.dockerPool.Purge(suite.postgresResource)
+		}
 	}
 }
 

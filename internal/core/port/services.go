@@ -16,6 +16,7 @@ type IngestionService interface {
 	GetGoogleEmails(ctx context.Context, userID uuid.UUID, receivedAfter time.Time, orderBy string) ([]domain.GoogleEmail, error)
 	NormalizeMicrosoftEmail(tenantID uuid.UUID, userID uuid.UUID, email domain.MicrosoftEmail) domain.Email
 	NormalizeGoogleEmail(tenantID uuid.UUID, userID uuid.UUID, email domain.GoogleEmail) domain.Email
+	BatchWriter(ctx context.Context, tenantID uuid.UUID, userID uuid.UUID, in <-chan domain.Email, batchSize int) error
 }
 
 type FraudDetectionService interface {
