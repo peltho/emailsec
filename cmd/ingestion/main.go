@@ -58,9 +58,13 @@ func main() {
 	// Create HTTP server
 	httpServer := server.NewHTTPServer(notifier, ingestionService)
 
+	// Create cancellable context for worker lifecycle
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+
 	// Start HTTP server in a goroutine
 	go func() {
-		if err := httpServer.Start(httpAddr); err != nil {
+		if err := httpServer.Start(workerCtx, httpAddr); err != nil {
 			log.Fatalf("Failed to start HTTP server: %v", err)
 		}
 	}()
@@ -74,11 +78,12 @@ func main() {
 
 	log.Info("Shutting down ingestion service...")
 
-	// Graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// Graceful shutdown with timeout
+	// Workers will drain the queue before stopping
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
 
-	if err := httpServer.Shutdown(ctx); err != nil {
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Errorf("Error shutting down HTTP server: %v", err)
 	}
 }

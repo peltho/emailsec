@@ -53,20 +53,25 @@ func (i *IngestionService) ingestMicrosoftTenant(ctx context.Context, tenantID u
 	userCh := make(chan domain.MicrosoftUser, len(users))
 
 	var wg sync.WaitGroup
-	for w := 0; w < numWorkers; w++ {
+	for w := range numWorkers {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			for user := range userCh {
+			for {
 				select {
 				case <-ctx.Done():
 					log.Warnf("[Worker %d] Context cancelled, stopping ingestion", workerID)
 					return
-				default:
-				}
-				if err := i.ingestMicrosoftUser(ctx, tenantID, user); err != nil {
-					log.Errorf("[Worker %d] Failed to ingest user %s: %v", workerID, user.UserID, err)
-					// Do not block if one fails
+				case user, ok := <-userCh:
+					if !ok {
+						return
+					}
+					userCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+					if err := i.ingestMicrosoftUser(userCtx, tenantID, user); err != nil {
+						log.Errorf("[Worker %d] Failed to ingest user %s: %v", workerID, user.UserID, err)
+						// Do not block if one fails
+					}
+					cancel()
 				}
 			}
 		}(w)
@@ -78,7 +83,6 @@ func (i *IngestionService) ingestMicrosoftTenant(ctx context.Context, tenantID u
 	}
 	close(userCh)
 
-	// Wait for all workers to finish
 	wg.Wait()
 
 	return nil
@@ -94,19 +98,23 @@ func (i *IngestionService) ingestGoogleTenant(ctx context.Context, tenantID uuid
 	userCh := make(chan domain.GoogleUser, len(users))
 
 	var wg sync.WaitGroup
-	for w := 0; w < numWorkers; w++ {
+	for w := range numWorkers {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			for user := range userCh {
+			for {
 				select {
 				case <-ctx.Done():
 					log.Warnf("[Worker %d] Context cancelled, stopping ingestion", workerID)
 					return
-				default:
-				}
-				if err := i.ingestGoogleUser(ctx, tenantID, user); err != nil {
-					log.Errorf("[Worker %d] Failed to ingest user %s: %v", workerID, user.UserID, err)
+				case user, ok := <-userCh:
+					if !ok {
+						return
+					}
+
+					if err := i.ingestGoogleUser(ctx, tenantID, user); err != nil {
+						log.Errorf("[Worker %d] Failed to ingest user %s: %v", workerID, user.UserID, err)
+					}
 				}
 			}
 		}(w)
@@ -154,36 +162,17 @@ func (i *IngestionService) ingestMicrosoftUser(ctx context.Context, tenantID uui
 		errCh <- i.BatchWriter(ctx, tenantID, user.UserID, emailCh, 500)
 	}()
 
-	normalizeErr := func() error {
-		for _, email := range emails {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			normalized := i.NormalizeMicrosoftEmail(tenantID, user.UserID, email)
-			emailCh <- normalized
-
-			if email.ReceivedAt.After(maxSeen) {
-				maxSeen = email.ReceivedAt
-			}
+	for _, email := range emails {
+		emailCh <- i.NormalizeMicrosoftEmail(tenantID, user.UserID, email)
+		if email.ReceivedAt.After(maxSeen) {
+			maxSeen = email.ReceivedAt
 		}
-		return nil
-	}()
-
-	// Close channel to signal batch writer to finish
+	}
 	close(emailCh)
 
 	// Wait for batch writer to finish
-	batchErr := <-errCh
-
-	if normalizeErr != nil {
-		return normalizeErr
-	}
-
-	// If batch writer failed, don't update cursor
-	if batchErr != nil {
-		return batchErr
+	if err := <-errCh; err != nil {
+		return err
 	}
 
 	cursor.LastReceivedAt = maxSeen
@@ -218,40 +207,22 @@ func (i *IngestionService) ingestGoogleUser(ctx context.Context, tenantID uuid.U
 	emailCh := make(chan domain.Email, 10_000)
 	errCh := make(chan error, 1)
 
+	// Start batch writer goroutine
 	go func() {
 		errCh <- i.BatchWriter(ctx, tenantID, user.UserID, emailCh, 500)
 	}()
 
-	normalizeErr := func() error {
-		for _, email := range emails {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			normalized := i.NormalizeGoogleEmail(tenantID, user.UserID, email)
-			emailCh <- normalized
-
-			if email.ReceivedAt.After(maxSeen) {
-				maxSeen = email.ReceivedAt
-			}
+	for _, email := range emails {
+		emailCh <- i.NormalizeGoogleEmail(tenantID, user.UserID, email)
+		if email.ReceivedAt.After(maxSeen) {
+			maxSeen = email.ReceivedAt
 		}
-		return nil
-	}()
-
-	// Close channel to signal batch writer to finish
+	}
 	close(emailCh)
 
-	// Wait for batch writer to finish, even if context was cancelled
-	batchErr := <-errCh
-
-	if normalizeErr != nil {
-		return normalizeErr
-	}
-
-	// If batch writer failed, don't update cursor
-	if batchErr != nil {
-		return batchErr
+	// Wait for batch writer to finish
+	if err := <-errCh; err != nil {
+		return err
 	}
 
 	cursor.LastReceivedAt = maxSeen
@@ -343,32 +314,33 @@ func (i *IngestionService) BatchWriter(ctx context.Context, tenantID uuid.UUID, 
 			return nil
 		}
 		if err := i.storage.StoreBatch(ctx, batch); err != nil {
-			log.Errorf("Failed to persist batch: %s", err)
 			return err
 		}
-
-		batchMsg := &domain.NormalizedEmailBatchMessage{
+		msg := &domain.NormalizedEmailBatchMessage{
 			BatchID:     uuid.New(),
 			TenantID:    tenantID,
 			UserID:      userID,
 			EmailIDList: ExtractEmailIDs(batch),
 		}
-
-		if err := i.notifierClient.NotifyEmailBatchIngested(ctx, batchMsg); err != nil {
-			log.Errorf("Failed to notify email batch ingested: %s", err)
+		if err := i.notifierClient.NotifyEmailBatchIngested(ctx, msg); err != nil {
 			return err
 		}
-
-		// Reset slice while keeping capacity
 		batch = batch[:0]
 		return nil
 	}
 
 	for {
 		select {
+		case <-ticker.C:
+			if err := flush(); err != nil {
+				return err
+			}
+			// continue, don't exit
+		case <-ctx.Done():
+			_ = flush() // best effort
+			return ctx.Err()
 		case email, ok := <-in:
 			if !ok {
-				// Channel closed, flush and return
 				return flush()
 			}
 			batch = append(batch, email)
@@ -377,16 +349,6 @@ func (i *IngestionService) BatchWriter(ctx context.Context, tenantID uuid.UUID, 
 					return err
 				}
 			}
-
-		case <-ticker.C:
-			if err := flush(); err != nil {
-				return err
-			}
-
-		case <-ctx.Done():
-			// Attempt final flush before exiting
-			_ = flush()
-			return ctx.Err()
 		}
 	}
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -18,6 +19,7 @@ type HTTPServer struct {
 	echo             *echo.Echo
 	notifier         port.NotifierClient
 	ingestionService port.IngestionService
+	ingestionHandler *handler.IngestionHTTPHandler
 }
 
 type IngestEmailRequest struct {
@@ -38,14 +40,15 @@ func NewHTTPServer(
 	e.Use(middleware.Recover())
 	e.Use(middleware.RequestID())
 
+	// Initialize handlers
+	ingestionHandler := handler.NewIngestionHTTPHandler(ingestionService, 10, 10_000)
+
 	server := &HTTPServer{
 		echo:             e,
 		notifier:         notifier,
 		ingestionService: ingestionService,
+		ingestionHandler: ingestionHandler,
 	}
-
-	// Initialize handlers
-	ingestionHandler := handler.NewIngestionHTTPHandler(ingestionService)
 
 	// Routes
 	e.GET("/health", server.healthCheck)
@@ -61,12 +64,21 @@ func (s *HTTPServer) healthCheck(c echo.Context) error {
 	})
 }
 
-func (s *HTTPServer) Start(address string) error {
+func (s *HTTPServer) Start(ctx context.Context, address string) error {
+	s.ingestionHandler.Start(ctx)
 	log.Infof("Starting HTTP server on %s", address)
 	return s.echo.Start(address)
 }
 
 func (s *HTTPServer) Shutdown(ctx context.Context) error {
 	log.Info("Shutting down HTTP server")
-	return s.echo.Shutdown(ctx)
+	// First stop accepting new HTTP requests and wait for in-flight requests to complete
+	err := s.echo.Shutdown(ctx)
+	// Then stop workers and drain the job queue
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+
+	s.ingestionHandler.Stop(drainCtx)
+	drainCancel()
+	return err
 }

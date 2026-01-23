@@ -159,7 +159,7 @@ func (f *FraudDetectionService) processEmailFromBatch(
 	// if so, is it ok to make a DB call for each email (if not a lot of frauds, I suppose..) and notify
 	// too many frauds: batch update like ingestion does
 	// or: publish a message per fraudulent email in another queue and consume them elsewhere (another consumer for instance)
-	// then beware of DB concurrent access to email records!
+	// then beware of DB concurrent access to email records! Otherwise just store treated emails in a separate table (processed_emails)
 
 	return nil
 }

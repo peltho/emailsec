@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 	log "github.com/sirupsen/logrus"
@@ -37,7 +38,7 @@ func main() {
 	}
 	defer amqpClient.Close()
 	publisher := amqp.NewPublisher(amqpClient)
-	notifier := client.NewAMQPNotifier(*publisher)
+	_ = client.NewAMQPNotifier(*publisher)
 
 	ctx := context.Background()
 	db, err := storage.NewPostgresDB(ctx, dbHost, dbPort, dbUser, dbPassword, dbName)
@@ -57,6 +58,8 @@ func main() {
 	messageHandler := handler.NewAMQPConsumer(
 		fraudDetectionService,
 		validate,
+		10,
+		10_000,
 	)
 
 	consumer := amqp.NewConsumer(amqpClient, messageHandler)
@@ -65,15 +68,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	messageHandler.Start(ctx)
+
 	if err := consumer.Consume(ctx, domain.EmailAnalysisQueue); err != nil {
 		log.Fatalf("Failed to start consumer: %v", err)
 	}
 
 	log.Info("Fraud detection service started successfully")
 	log.Infof("Consuming messages from queue: %s", domain.EmailAnalysisQueue)
-
-	// You can use the notifier to send messages when fraud is detected
-	_ = notifier
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
@@ -82,4 +84,8 @@ func main() {
 
 	log.Info("Shutting down fraud detection service...")
 	cancel()
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer drainCancel()
+	messageHandler.Stop(drainCtx)
 }
